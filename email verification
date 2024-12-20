@@ -1,0 +1,215 @@
+import cv2
+from deepface import DeepFace
+import time
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import os
+import imaplib
+from email.header import decode_header
+from datetime import datetime
+import email
+#  https://github.com/ChaitanyaShirse?tab=repositories   #
+
+# Email credentials and configuration
+sender_email = "sendersmail@gmail.com"
+sender_password = "*******"
+recipient_email = "reciever@gmail.com"  # Replace with recipient's email
+IMAP_SERVER = "imap.gmail.com"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+save_path = "E:\\program\\dataset"  # Path to save unknown face images
+
+# Monitor email function
+def monitor_all_emails():
+    """Monitor all new emails and check for 'accept' keyword."""
+    try:
+        # Connect to the IMAP server
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+        mail.login(sender_email, sender_password)
+
+        print("Monitoring all incoming emails...")
+        start_time = datetime.now()
+
+        while True:
+            try:
+                # Select the inbox
+                mail.select("inbox")
+
+                # Search for all unseen emails
+                status, messages = mail.search(None, "UNSEEN")
+                email_ids = messages[0].split()
+
+                for email_id in email_ids:
+                    # Fetch the email
+                    status, msg_data = mail.fetch(email_id, "(RFC822)")
+
+                    for response_part in msg_data:
+                        if isinstance(response_part, tuple):
+                            # Parse email content
+                            msg = email.message_from_bytes(response_part[1])
+
+                            # Get the email's delivery time
+                            date_str = msg["Date"]
+                            email_time = datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %z").replace(tzinfo=None)
+
+                            # Check if the email time is after the start time
+                            if email_time < start_time:
+                                continue
+
+                            # Decode email sender
+                            from_ = msg.get("From")
+
+                            # Decode email subject
+                            subject, encoding = decode_header(msg["Subject"])[0]
+                            if isinstance(subject, bytes):
+                                subject = subject.decode(encoding if encoding else "utf-8")
+
+                            # Extract the email body
+                            body = ""
+                            if msg.is_multipart():
+                                for part in msg.walk():
+                                    if part.get_content_type() == "text/plain":
+                                        body = part.get_payload(decode=True).decode()
+                                        break
+                            else:
+                                body = msg.get_payload(decode=True).decode()
+
+                            # Check for the keyword 'accept' in subject or body
+                            if 'accept' in subject.lower() or 'accept' in body.lower():
+                                print("Access Granted")
+                                
+                            elif 'deny' in subject.lower() or 'deny' in body.lower():
+                                print("Access Denied")
+
+            except Exception as e:
+                print(f"Error while checking emails: {e}")
+
+            time.sleep(10)  # Wait for 10 seconds before checking again
+    except KeyboardInterrupt:
+        print("\nExiting...")
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        try:
+            # Logout and close the connection
+            mail.logout()
+        except:
+            pass
+
+# Email sending function
+def send_email_with_attachment(sender_email, sender_password, recipient_email, subject, message_body, attachment_path):
+    try:
+        # Create the email message
+        msg = MIMEMultipart()
+        msg['Subject'] = subject
+        msg['From'] = sender_email
+        msg['To'] = recipient_email
+        msg.attach(MIMEText(message_body, 'plain'))
+
+        # Attach the image file
+        if os.path.exists(attachment_path):
+            with open(attachment_path, 'rb') as attachment:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(attachment.read())
+            encoders.encode_base64(part)
+            part .add_header(
+                'Content-Disposition',
+                f'attachment; filename={os.path.basename(attachment_path)}',
+            )
+            msg.attach(part)
+
+        # Connect to the SMTP server and send the email
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+        print("Email sent successfully!")
+    except Exception as e:
+        print(f"An error occurred while sending the email: {e}")
+
+# Face verification and unknown face handling
+known_face_names = ["Chaitu"]
+image_paths = [
+    "D:\\Camera Roll\\WIN_20230725_22_37_40_Pro.jpg",
+    #"D:\\PYTHON\\IMGS\\rohit.jpg"
+]
+
+# Initialize webcam and face detection
+video_capture = cv2.VideoCapture(0)
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+unknown_face_detected = False
+start_time = None
+
+# Define email subject and body for unknown face detection
+email_subject = "Unknown Face Detected"
+email_body = "An unknown face has been detected and captured. See the attached image."
+
+
+while True:
+    # Capture frame
+    ret, frame = video_capture.read()
+    if not ret:
+        break
+
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+
+    name = "Unknown"
+
+    for (x, y, w, h) in faces:
+        face_crop = frame[y:y + h, x:x + w]
+        temp_face_path = "temp_face.jpg"
+        cv2.imwrite(temp_face_path, face_crop)
+
+        for known_image_path, known_name in zip(image_paths, known_face_names):
+            try:
+                result = DeepFace.verify(
+                    img1_path=known_image_path,
+                    img2_path=temp_face_path,
+                    model_name="VGG-Face",
+                    enforce_detection=False
+                )
+                if result["verified"]:
+                    name = known_name
+                    unknown_face_detected = False
+                    start_time = None
+                    break
+            except Exception as e:
+                print(f"Error during face verification: {e}")
+
+        # Start the timer if the face is unknown
+        if name == "Unknown" and not unknown_face_detected:
+            unknown_face_detected = True
+            start_time = time.time()
+
+        # If unknown for 7 seconds, save image and send email
+        if unknown_face_detected and start_time and time.time() - start_time >= 7:
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            unknown_image_path = os.path.join(save_path, f"unknown_{timestamp}.jpg")
+            cv2.imwrite(unknown_image_path, face_crop)
+            cv2.imshow('Unknown Face Captured', face_crop)
+
+            # Send email with the captured image
+            send_email_with_attachment(
+                sender_email, sender_password, recipient_email, email_subject, email_body, unknown_image_path
+            )
+
+            unknown_face_detected = False
+
+        # Draw rectangle and label
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.putText(frame, name, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+
+    cv2.imshow('Video', frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+video_capture.release()
+cv2.destroyAllWindows()
+
+monitor_all_emails()  # Start monitoring emails after the video capture loop ends
